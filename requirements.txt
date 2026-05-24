@@ -1,0 +1,12 @@
+pandas
+requests
+networkx
+numpy
+catboost==1.2.10
+scikit-learn
+joblib
+seaborn
+matplotlib
+solidity-parser
+openai
+python-dotenv
