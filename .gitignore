@@ -13,3 +13,5 @@ venv/
 
 # Model / data artifacts
 catboost_info/
+
+DESIGN.md

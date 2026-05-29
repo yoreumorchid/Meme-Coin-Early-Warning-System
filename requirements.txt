@@ -10,3 +10,5 @@ matplotlib
 solidity-parser
 openai
 python-dotenv
+fastapi
+uvicorn[standard]

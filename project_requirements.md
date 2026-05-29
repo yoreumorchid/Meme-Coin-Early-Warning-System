@@ -1,8 +1,5 @@
 # Task Distribution
 
-Deepnote for collaboration  
-Free open-source hosted LLMs? Have a look here: [**https://openrouter.ai/openrouter/free**](https://openrouter.ai/openrouter/free) 
-
 | Name | Student ID | Role |
 | :---- | :---- | :---- |
 | WANG YINGQI | 23050522 | Construct a fund flow network and calculate graph theory features (such as node degree and centrality) to transform complex transfer paths into numerical features that can be read by the model. |

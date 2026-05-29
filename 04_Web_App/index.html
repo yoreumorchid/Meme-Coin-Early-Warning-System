@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Meme-Coin Early Warning System · On-Chain Forensics</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg-grid"></div>
+
+  <header class="site-header">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2 3 7v6c0 5 4 8 9 9 5-1 9-4 9-9V7l-9-5z"/>
+          <path d="m9 12 2 2 4-4"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Meme-Coin Early Warning System</h1>
+        <p class="tagline">Agentic On-Chain Forensics · Rug-Pull Risk Intelligence</p>
+      </div>
+    </div>
+    <nav class="nav-links">
+      <a href="#scanner">Scanner</a>
+      <a href="#how">How it Works</a>
+      <a href="#about">About</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Hero / Scanner -->
+    <section id="scanner" class="scanner">
+      <div class="scanner-card">
+        <div class="badge">
+          <span class="pulse"></span> Agent Online · MCP Polling Active
+        </div>
+        <h2>Audit a Smart Contract</h2>
+        <p class="muted">
+          Submit an Ethereum / BSC contract address. Our autonomous agent will fetch on-chain
+          transactions, compute network-graph features, run AST vulnerability scans, and return
+          a weighted risk score from the pre-trained CatBoost forensics model.
+        </p>
+
+        <form id="auditForm" class="audit-form" autocomplete="off">
+          <div class="input-wrap">
+            <span class="prefix">0x</span>
+            <input
+              id="address"
+              name="address"
+              type="text"
+              placeholder="Paste contract address (e.g. e0b8a2bf...c5bf9)"
+              spellcheck="false"
+              required
+            />
+          </div>
+          <div class="form-row">
+            <select id="chain" name="chain">
+              <option value="eth">Ethereum (Mainnet)</option>
+              <option value="bsc">BNB Smart Chain</option>
+            </select>
+            <button id="analyzeBtn" type="submit">
+              <span class="btn-label">Run Forensic Audit</span>
+              <span class="btn-spinner" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div class="examples">
+            <span class="muted small">Try sample:</span>
+            <button type="button" class="chip" data-sample="0x00e25f0fd5d6a36c252398ca14f3f29128cf5bf9">Known fraud A</button>
+            <button type="button" class="chip" data-sample="0x010496d8f3269ee9b05060bdf40c2d66e83e61dd">Known fraud B</button>
+            <button type="button" class="chip" data-sample="0xdAC17F958D2ee523a2206206994597C13D831ec7">Legit (USDT)</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Pipeline indicator -->
+      <div id="pipeline" class="pipeline" hidden>
+        <div class="step" data-step="1"><span class="dot"></span> Fetching on-chain data (MCP)</div>
+        <div class="step" data-step="2"><span class="dot"></span> Building NetworkX fund-flow graph</div>
+        <div class="step" data-step="3"><span class="dot"></span> AST vulnerability scan</div>
+        <div class="step" data-step="4"><span class="dot"></span> CatBoost inference</div>
+        <div class="step" data-step="5"><span class="dot"></span> Weighted synthesis</div>
+      </div>
+    </section>
+
+    <!-- Report -->
+    <section id="report" class="report" hidden>
+      <div class="report-header">
+        <div>
+          <span class="muted small">Audited address</span>
+          <h3 id="reportAddress" class="mono">—</h3>
+        </div>
+        <div class="meta">
+          <span id="reportChain" class="tag">ETH</span>
+          <span id="reportTime" class="muted small">—</span>
+          <button id="exportPdfBtn" class="export-btn" type="button" title="Export this report as PDF">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Export PDF
+          </button>
+          <button id="exportJsonBtn" class="export-btn ghost" type="button" title="Download raw JSON report">
+            JSON
+          </button>
+        </div>
+      </div>
+
+      <div class="report-grid">
+        <!-- Risk score gauge -->
+        <div class="card risk-card">
+          <h4>Weighted Risk Score</h4>
+          <div class="gauge">
+            <svg viewBox="0 0 120 120" class="gauge-svg">
+              <circle cx="60" cy="60" r="52" class="gauge-track"/>
+              <circle id="gaugeFill" cx="60" cy="60" r="52" class="gauge-fill"/>
+            </svg>
+            <div class="gauge-center">
+              <div id="riskScore" class="score">--</div>
+              <div id="riskLabel" class="muted small">Calculating</div>
+            </div>
+          </div>
+          <div class="legend">
+            <div><span class="dot green"></span> 0–39 Low</div>
+            <div><span class="dot yellow"></span> 40–69 Medium</div>
+            <div><span class="dot red"></span> 70–100 High</div>
+          </div>
+        </div>
+
+        <!-- ML Model -->
+        <div class="card">
+          <h4>ML Fraud Probability</h4>
+          <p class="muted small">CatBoost · Recall-optimized · ROC-AUC 0.96</p>
+          <div class="bar"><div id="mlBar" class="bar-fill"></div></div>
+          <div class="row">
+            <span class="muted">Probability</span>
+            <strong id="mlProb">—</strong>
+          </div>
+          <div class="row">
+            <span class="muted">Decision threshold</span>
+            <strong>0.42 (Recall-biased)</strong>
+          </div>
+        </div>
+
+        <!-- AST -->
+        <div class="card">
+          <h4>AST Static Analysis</h4>
+          <p class="muted small">Solidity vulnerability patterns</p>
+          <ul id="astList" class="findings"></ul>
+        </div>
+
+        <!-- Graph features -->
+        <div class="card">
+          <h4>Graph Features (NetworkX)</h4>
+          <p class="muted small">Fund-flow topology metrics</p>
+          <table class="kv">
+            <tbody id="graphFeatures"></tbody>
+          </table>
+        </div>
+
+        <!-- Transactions sample -->
+        <div class="card span-2">
+          <h4>Recent Transactions (sample)</h4>
+          <div class="table-wrap">
+            <table class="tx">
+              <thead>
+                <tr>
+                  <th>Hash</th>
+                  <th>From</th>
+                  <th>To</th>
+                  <th class="right">Value (ETH)</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody id="txTable"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Verdict -->
+        <div class="card verdict span-2">
+          <h4>Agent Verdict</h4>
+          <p id="verdictText">—</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section id="how" class="how">
+      <h2>How the Agent Works</h2>
+      <div class="how-grid">
+        <div class="how-step">
+          <div class="num">1</div>
+          <h5>Data Fetching (MCP)</h5>
+          <p>Pulls raw transactions and source code via Etherscan / BscScan RPC endpoints.</p>
+        </div>
+        <div class="how-step">
+          <div class="num">2</div>
+          <h5>Feature Transformation</h5>
+          <p>NetworkX converts the fund flow into degree centrality, clustering & flow metrics.</p>
+        </div>
+        <div class="how-step">
+          <div class="num">3</div>
+          <h5>AST Vulnerability Scan</h5>
+          <p>Static analysis flags hidden mint functions, owner backdoors & blacklist traps.</p>
+        </div>
+        <div class="how-step">
+          <div class="num">4</div>
+          <h5>Inference & Synthesis</h5>
+          <p>CatBoost emits a fraud probability, weighted with AST findings into one risk score.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="about" class="about">
+      <h2>Why Recall Matters</h2>
+      <p>
+        The cost of a <strong>False Negative</strong> (missing a rug pull) far outweighs a False
+        Positive. The model is tuned for high <strong>Recall</strong> — better to over-warn than
+        to let a malicious contract slip past liquidity providers.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <span class="muted small">
+      © 2026 Meme-Coin Early Warning System · Built for academic demonstration.
+      <span class="mono">No financial advice.</span>
+    </span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
