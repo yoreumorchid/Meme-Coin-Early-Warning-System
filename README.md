@@ -90,7 +90,144 @@ in production mode.
 
 ---
 
-## 4. Out-of-sample validation
+## 4. Components in detail
+
+This section walks through the actual notebooks and Python modules so the
+report reflects what is in the repo, not just the high-level picture.
+
+### 4.1 Data pipeline (`01_Data_Pipeline/`)
+
+**`1_data_ingestion.ipynb`** — pulls the two label sources. Fraud labels
+come from a public rugpull dataset on GitHub; safe labels come from the
+Uniswap verified-token list (fetched via IPFS). For each labelled
+contract it calls the Etherscan v2 `account.tokentx` endpoint and writes
+the raw transfers to one CSV per token under `01_Data_Pipeline/raw_data/`
+with filenames like `fraud_eth_0x….csv` / `safe_eth_0x….csv`. The label
+and the chain are encoded in the filename.
+
+**`2_processing_and_graph.ipynb`** — turns each raw transaction CSV into
+a single feature row. Transfers are loaded into a directed NetworkX
+graph (nodes = wallets, edges = transfers weighted by transferred value)
+and five features are computed per token:
+
+| Feature | Meaning |
+|---|---|
+| `max_centrality` | Largest degree centrality — flags a wallet that touches almost everything (a master / deployer wallet) |
+| `avg_clustering` | Average clustering coefficient on the undirected projection — picks up wash-trading triangles |
+| `unique_wallets` | Number of distinct wallets in the graph |
+| `value_volatility` | Standard deviation of transfer values |
+| `tx_count` | Total number of transfers |
+
+All rows are concatenated with the binary `label` column (0 = safe,
+1 = fraud) and written to `01_Data_Pipeline/processed_features.csv`.
+That file is the only input to the model-training notebook.
+
+### 4.2 Model training (`02_Model_Training/`)
+
+**`3_fraud_detection_modeling.ipynb`** — loads `processed_features.csv`,
+fits a `StandardScaler` on the five features, then does a stratified
+80/20 train/test split. The classifier is **CatBoost** with
+`iterations=300`, `depth=6`, `learning_rate=0.05`, `loss=Logloss`,
+`eval_metric=Recall`. We deliberately optimise for recall because the
+cost of missing a rug is higher than the cost of flagging a borderline
+contract. After fitting we report ROC-AUC plus the standard
+precision / recall / F1 breakdown on the test set, and pick a decision
+threshold that protects recall on the validation fold.
+
+Three artifacts are exported into `02_Model_Training/exported_models/`:
+
+- `rugpull_detector.cbm` — the trained CatBoost model
+- `scaler.joblib` — the fitted StandardScaler (so inference scales
+  exactly the same way as training)
+- `recall_threshold.joblib` — the chosen decision threshold
+
+These three files are the only thing the production pipeline needs at
+inference time.
+
+### 4.3 Tools (`03_Agents_and_Tools/tools/`)
+
+Each tool is a plain Python module exposing one function, written in the
+MCP-tool style (single dict-in, dict-out, no hidden state). They are the
+building blocks reused by both the FastAPI backend and the LLM agent.
+
+- **`fetch_tool.fetch_transactions(address, chain_id)`** — thin wrapper
+  around Etherscan v2's `account.tokentx` endpoint. Returns up to 1000
+  ERC-20 transfer rows.
+- **`graph_tool.extract_graph_features(transactions)`** — implements
+  the same NetworkX pipeline as the training notebook, so live inference
+  and training share the exact same feature definitions.
+- **`predict_tool.predict_fraud_probability(features)`** — loads the
+  three exported artifacts, scales the input dict, and returns a fraud
+  probability in the 0–100 range plus a status.
+- **`ast_tool.analyze_contract_code(address)`** — fetches the verified
+  Solidity source through Etherscan v2. It first tries `solidity_parser`
+  to walk a real AST, and falls back to regex patterns when parsing
+  fails or when the source contains constructs the parser can't handle.
+  The patterns it scores are:
+  - public / external mint functions (`_mint`, `mintTo`, etc.) — weight 0.20–0.35
+  - `onlyOwner` functions whose names contain drain / withdraw / blacklist / pause keywords — 0.15–0.25
+  - mapping-based blacklists
+  - trading-pause / trading-enable switches
+
+  Findings are deduplicated, weights are summed and capped at 1.0, and a
+  short plain-English explanation is attached to each finding.
+
+### 4.4 Bonus integration notebook
+
+**`03_Agents_and_Tools/4_bonus_ast_and_integration.ipynb`** is the
+playground that ties the AST scanner to the trained CatBoost model end
+to end, without the LLM in the loop. It uses an earlier 70/30 weighting
+(`ml_prob × 0.70 + ast_score × 100 × 0.30`); the production backend
+uses the 75/100 formula in Section 1 instead. The notebook is kept for
+the assignment's bonus task and as a place to sanity-check changes to
+either component in isolation.
+
+### 4.5 LLM agent (`03_Agents_and_Tools/agent_logic.ipynb`)
+
+The agent uses the **DeepSeek** chat completions API in OpenAI-compatible
+function-calling mode. The four tools above are registered as JSON
+schemas; the model decides on its own which tool to call next and in
+what order. A typical run looks like this:
+
+1. The user prompt is a contract address plus the instruction to audit
+   it.
+2. The model emits a `tool_call` for `fetch_transactions`. We execute
+   it locally and feed the result back as a `tool` message.
+3. The model then calls `extract_graph_features`, then
+   `predict_fraud_probability`, then `analyze_contract_code` — though
+   the order is its choice, not hard-coded.
+4. Once it has enough information, it emits a final assistant message
+   containing a JSON object with the component scores (ML %, AST %), a
+   composite risk, and a HIGH / MEDIUM / LOW verdict.
+
+The notebook also contains a small test suite that runs the agent
+against a handful of known fraud and known-safe addresses (SHIB, PEPE,
+FLOKI, plus several confirmed rugs) so we can sanity-check both the
+agent's planning behaviour and the underlying model's predictions in one
+go. The agent is intentionally **not** in the web app's request path —
+the web app uses a fixed, deterministic call order so audits are
+reproducible and don't depend on LLM availability.
+
+### 4.6 Web application (`04_Web_App/`)
+
+`backend.py` is a small FastAPI service. It exposes one endpoint that
+takes a contract address, calls the four tools in fixed order, applies
+the `risk = clamp(ml_prob × 75 + ast_score × 100, 0, 100)` formula,
+and returns one JSON document containing the score, the AST findings,
+the graph features, a sample of transactions, and a verdict string.
+
+The frontend (`index.html` + `app.js` + `styles.css`) is a single static
+page. It shows the animated five-step pipeline while the request is in
+flight, then renders the gauge, panels, and verdict. *Export PDF*
+triggers a print-styled stylesheet; *Export JSON* dumps the raw
+response.
+
+`prescreen_candidates.py` is the out-of-sample harness described in the
+next section.
+
+---
+
+## 5. Out-of-sample validation
 
 To check that the model does something useful on addresses it has never
 seen, we ran `04_Web_App/prescreen_candidates.py`. The script downloads
@@ -136,7 +273,7 @@ composite in the safe zone.
 
 ---
 
-## 5. What it catches well, what it does not
+## 6. What it catches well, what it does not
 
 **Where it works.** Small-cap meme coins with the classic pump-then-dump
 shape: a small number of wallets concentrating supply, sudden value
@@ -162,7 +299,7 @@ don't read a low score as an endorsement.
 
 ---
 
-## 6. Known limitations
+## 7. Known limitations
 
 A few things worth being honest about:
 
@@ -184,7 +321,7 @@ A few things worth being honest about:
 
 ---
 
-## 7. Files worth looking at
+## 8. Files worth looking at
 
 - [04_Web_App/backend.py](04_Web_App/backend.py) — FastAPI service, the canonical orchestration
 - [04_Web_App/index.html](04_Web_App/index.html), [app.js](04_Web_App/app.js), [styles.css](04_Web_App/styles.css) — the frontend
