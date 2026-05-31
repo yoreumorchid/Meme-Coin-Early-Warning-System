@@ -60,7 +60,7 @@ app.add_middleware(
 )
 
 # Chain id mapping used by Etherscan v2 API
-CHAIN_IDS = {"eth": "1", "bsc": "56"}
+CHAIN_IDS = {"eth": "1"}
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +175,12 @@ def _verdict(score: int, ml_prob: float, ast: list[dict]) -> str:
                 f"{ml_prob*100:.1f}%, contract carries owner-privileged operations. "
                 f"Treat with caution and monitor on-chain activity.")
     return (f"LOW RISK — No strong fraud signature detected. Model probability "
-            f"{ml_prob*100:.1f}% and no critical AST pattern triggered. Not financial "
-            f"advice — continued monitoring is still recommended.")
+            f"{ml_prob*100:.1f}% and no critical AST pattern triggered. "
+            f"CAVEAT: this model is trained on secondary-market meme-coin rug pulls "
+            f"(pump-then-dump patterns). It may MISS other failure modes such as "
+            f"ICO/presale exit scams, low-activity dead tokens, or novel attack "
+            f"vectors with sparse on-chain footprints. Not financial advice — "
+            f"always DYOR and continue on-chain monitoring.")
 
 
 # ---------------------------------------------------------------------------
@@ -195,11 +199,33 @@ def audit(req: AuditRequest):
     # 1) Fetch on-chain transactions
     fetched = fetch_transactions(req.address, chain_id=chain_id)
     if not fetched.get("success"):
+        err = (fetched.get("error") or "").lower()
+        # Etherscan returns success=False with "No transactions found" when the
+        # address has no ERC-20 transfers (either not a token contract, or
+        # truly inactive). Surface this as a clear 404-style message.
+        if "no transactions" in err or "no records" in err:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No ERC-20 transactions found for this address on Ethereum "
+                    "mainnet. The address may not be an ERC-20 token contract, "
+                    "or it may not exist on this chain. Please double-check the "
+                    "address on etherscan.io."
+                ),
+            )
         raise HTTPException(
             status_code=502,
             detail=f"Etherscan fetch failed: {fetched.get('error', 'unknown')}",
         )
     raw_txs = fetched["transactions"]
+    if not raw_txs:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Address returned zero ERC-20 transfer records. It is likely not "
+                "an ERC-20 token contract on Ethereum mainnet."
+            ),
+        )
 
     # 2) Graph features
     graph_feat = extract_graph_features(raw_txs)

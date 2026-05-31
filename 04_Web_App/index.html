@@ -38,7 +38,7 @@
         </div>
         <h2>Audit a Smart Contract</h2>
         <p class="muted">
-          Submit an Ethereum / BSC contract address. Our autonomous agent will fetch on-chain
+          Submit an Ethereum contract address. Our autonomous agent will fetch on-chain
           transactions, compute network-graph features, run AST vulnerability scans, and return
           a weighted risk score from the pre-trained CatBoost forensics model.
         </p>
@@ -56,10 +56,6 @@
             />
           </div>
           <div class="form-row">
-            <select id="chain" name="chain">
-              <option value="eth">Ethereum (Mainnet)</option>
-              <option value="bsc">BNB Smart Chain</option>
-            </select>
             <button id="analyzeBtn" type="submit">
               <span class="btn-label">Run Forensic Audit</span>
               <span class="btn-spinner" aria-hidden="true"></span>

@@ -318,6 +318,37 @@ button.loading .btn-label::after { content: 'ing…'; }
 }
 .chip:hover { color: var(--error); background: var(--surface-500); }
 
+/* ============ Error banner ============ */
+.error-banner {
+  margin-top: 24px;
+  padding: 18px 20px;
+  border: 1px solid var(--error);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--error) 8%, var(--surface-100));
+  font-family: var(--font-serif);
+  color: var(--text);
+}
+.error-banner .error-title {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--error);
+  margin-bottom: 6px;
+}
+.error-banner .error-body { font-size: 14px; line-height: 1.5; }
+.error-banner .error-addr {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+.error-banner code {
+  font-family: var(--font-mono);
+  background: var(--surface-300);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
 /* ============ Pipeline ============ */
 .pipeline {
   margin-top: 24px;

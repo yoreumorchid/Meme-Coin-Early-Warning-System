@@ -27,7 +27,7 @@ const $ = (sel) => document.querySelector(sel);
 
 const form = $('#auditForm');
 const addressInput = $('#address');
-const chainSelect = $('#chain');
+const chainSelect = { value: 'eth' };  // chain is fixed to Ethereum mainnet
 const analyzeBtn = $('#analyzeBtn');
 const pipelineEl = $('#pipeline');
 const reportEl = $('#report');
@@ -83,7 +83,7 @@ form.addEventListener('submit', async (e) => {
 });
 
 function flashError(msg) {
-  addressInput.style.borderColor = 'var(--red)';
+  addressInput.style.borderColor = 'var(--error)';
   addressInput.parentElement.title = msg;
   setTimeout(() => {
     addressInput.style.borderColor = '';
@@ -107,17 +107,23 @@ async function handleSubmit(address, chain) {
   const steps = pipelineEl.querySelectorAll('.step');
   steps.forEach((s) => s.classList.remove('active', 'done'));
 
+  hideErrorBanner();
+
   // Kick off the real API call in parallel with the animation when not mocking
   const apiPromise = USE_MOCK ? null : fetch(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ address, chain }),
   }).then(async (r) => {
+    let body = null;
+    try { body = await r.json(); } catch (_) { /* not json */ }
     if (!r.ok) {
-      const text = await r.text().catch(() => '');
-      throw new Error(`HTTP ${r.status}: ${text || r.statusText}`);
+      const detail = (body && body.detail) ? body.detail : r.statusText;
+      const err = new Error(detail);
+      err.status = r.status;
+      throw err;
     }
-    return r.json();
+    return body;
   });
 
   for (let i = 0; i < steps.length; i++) {
@@ -132,11 +138,11 @@ async function handleSubmit(address, chain) {
     report = USE_MOCK ? runAgentMock(address, chain) : await apiPromise;
   } catch (err) {
     console.error(err);
-    alert(
-      `Audit failed:\n${err.message}\n\n` +
-      `Falling back to offline mock report.`,
-    );
-    report = runAgentMock(address, chain);
+    pipelineEl.hidden = true;
+    showErrorBanner(err, address);
+    analyzeBtn.classList.remove('loading');
+    analyzeBtn.disabled = false;
+    return;
   }
 
   lastReport = report;
@@ -145,6 +151,39 @@ async function handleSubmit(address, chain) {
   analyzeBtn.classList.remove('loading');
   analyzeBtn.disabled = false;
   reportEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ---------- Inline error banner ----------
+function showErrorBanner(err, address) {
+  let banner = document.getElementById('errorBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'errorBanner';
+    banner.className = 'error-banner';
+    pipelineEl.parentNode.insertBefore(banner, pipelineEl);
+  }
+  const status = err.status ? `HTTP ${err.status}` : 'Network error';
+  const title = err.status === 404
+    ? 'Address not found on Ethereum mainnet'
+    : 'Audit failed';
+  banner.innerHTML = `
+    <div class="error-title">${title} <span class="muted small">(${status})</span></div>
+    <div class="error-body">${escapeHtml(err.message)}</div>
+    <div class="error-addr"><span class="muted small">Address:</span> <code>${escapeHtml(address)}</code></div>
+  `;
+  banner.hidden = false;
+  banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function hideErrorBanner() {
+  const banner = document.getElementById('errorBanner');
+  if (banner) banner.hidden = true;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -252,7 +291,7 @@ function buildVerdict(score, mlProb, ast) {
   if (score >= 40) {
     return `MEDIUM RISK — Mixed signals. The forensic model shows elevated probability (${(mlProb * 100).toFixed(1)}%) and the contract contains owner-privileged operations. Treat with caution, monitor on-chain activity, and avoid concentrated exposure.`;
   }
-  return `LOW RISK — No strong fraud signature detected. Model probability is ${(mlProb * 100).toFixed(1)}% and no critical AST pattern was triggered. This is not financial advice — continued on-chain monitoring is still recommended.`;
+  return `LOW RISK — No strong fraud signature detected. Model probability is ${(mlProb * 100).toFixed(1)}% and no critical AST pattern was triggered. CAVEAT: this model is trained on secondary-market meme-coin rug pulls (pump-then-dump patterns) and may MISS other failure modes such as ICO/presale exit scams, low-activity dead tokens, or novel attack vectors with sparse on-chain footprints. Not financial advice — always DYOR and continue on-chain monitoring.`;
 }
 
 // ---------- Render ----------
