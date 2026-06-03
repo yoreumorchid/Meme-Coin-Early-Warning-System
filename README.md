@@ -28,10 +28,15 @@ score along with a written verdict. The pipeline has four stages:
 The final score is
 
 ```
-risk = clamp(ml_prob * 75 + ast_score * 100, 0, 100)
+risk = clamp(ml_prob * 75 + ast_score * 25, 0, 100)
 ```
 
-with cut-offs HIGH ≥ 70, MEDIUM ≥ 40, otherwise LOW.
+with cut-offs HIGH ≥ 70, MEDIUM ≥ 40, otherwise LOW. The ML side is the
+dominant signal; AST can add up to 25 points on top. This is deliberate
+— established tokens such as USDT or USDC genuinely ship `pause` and
+`blacklist` functions, so we don't want a HIGH verdict from static
+findings alone. A real rug needs **both** an abnormal transfer graph
+and risky contract code to reach the HIGH band.
 
 A FastAPI backend (`04_Web_App/backend.py`) calls the four tools in fixed
 order. A separate DeepSeek-orchestrated agent
@@ -212,7 +217,7 @@ reproducible and don't depend on LLM availability.
 
 `backend.py` is a small FastAPI service. It exposes one endpoint that
 takes a contract address, calls the four tools in fixed order, applies
-the `risk = clamp(ml_prob × 75 + ast_score × 100, 0, 100)` formula,
+the `risk = clamp(ml_prob × 75 + ast_score × 25, 0, 100)` formula,
 and returns one JSON document containing the score, the AST findings,
 the graph features, a sample of transactions, and a verdict string.
 

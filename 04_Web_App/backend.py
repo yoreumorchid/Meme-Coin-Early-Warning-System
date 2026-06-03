@@ -159,8 +159,14 @@ def _graph_to_frontend(g: dict) -> dict:
 
 
 def _weighted_score(ml_prob_0_1: float, ast_score_0_1: float) -> int:
-    """ML probability is dominant (75%), AST findings add up to 25 points."""
-    return max(0, min(100, round(ml_prob_0_1 * 75 + ast_score_0_1 * 25 * 4)))
+    """ML probability is dominant (up to 75 pts), AST findings add up to 25 pts.
+
+    Capping AST at 25 prevents established tokens with legitimate owner
+    primitives (USDT, USDC, …) from being scored HIGH purely on static
+    findings. A real rug needs BOTH a suspicious transfer graph and risky
+    contract code to reach the HIGH band.
+    """
+    return max(0, min(100, round(ml_prob_0_1 * 75 + ast_score_0_1 * 25)))
 
 
 def _verdict(score: int, ml_prob: float, ast: list[dict]) -> str:

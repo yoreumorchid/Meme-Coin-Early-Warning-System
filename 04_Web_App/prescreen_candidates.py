@@ -93,7 +93,7 @@ def audit(address: str) -> dict:
     ast = analyze_contract_code(address)
     ml = float(pred.get("ml_probability", 0)) / 100.0
     ast_score = float(ast.get("ast_risk_score", 0))
-    risk = max(0, min(100, round(ml * 75 + ast_score * 100)))
+    risk = max(0, min(100, round(ml * 75 + ast_score * 25)))
     return {
         "status":   "ok",
         "ml_pct":   round(ml * 100, 1),
