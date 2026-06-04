@@ -126,24 +126,33 @@ async function handleSubmit(address, chain) {
     return body;
   });
 
-  for (let i = 0; i < steps.length; i++) {
+  for (let i = 0; i < steps.length - 1; i++) {
     steps[i].classList.add('active');
-    await sleep(450 + Math.random() * 250);
+    await sleep(1800 + Math.random() * 600);
     steps[i].classList.remove('active');
     steps[i].classList.add('done');
   }
+
+  // Final step pulses until the API actually returns — agent runs can take
+  // 10-20s, so we don't want the animation to finish before the real result.
+  const lastStep = steps[steps.length - 1];
+  lastStep.classList.add('active');
 
   let report;
   try {
     report = USE_MOCK ? runAgentMock(address, chain) : await apiPromise;
   } catch (err) {
     console.error(err);
+    lastStep.classList.remove('active');
     pipelineEl.hidden = true;
     showErrorBanner(err, address);
     analyzeBtn.classList.remove('loading');
     analyzeBtn.disabled = false;
     return;
   }
+
+  lastStep.classList.remove('active');
+  lastStep.classList.add('done');
 
   lastReport = report;
   renderReport(report);
@@ -327,14 +336,16 @@ function renderReport(r) {
   // AST
   const astList = $('#astList');
   astList.innerHTML = '';
-  if (!r.ast.length) {
+  const astArr = Array.isArray(r.ast) ? r.ast : [];
+  if (!astArr.length) {
     astList.innerHTML = '<li class="muted">No suspicious patterns detected.</li>';
   } else {
-    r.ast.forEach((f) => {
+    astArr.forEach((f) => {
       const li = document.createElement('li');
+      const sev = (f && f.severity) ? String(f.severity) : 'low';
       li.innerHTML = `
-        <span class="sev ${f.severity === 'high' ? 'high' : f.severity === 'med' ? 'med' : 'low'}">${f.severity.toUpperCase()}</span>
-        <div><strong>${escapeHtml(f.pattern)}</strong><br><span class="muted small">${escapeHtml(f.detail)}</span></div>
+        <span class="sev ${sev === 'high' ? 'high' : sev === 'med' ? 'med' : 'low'}">${sev.toUpperCase()}</span>
+        <div><strong>${escapeHtml(f.pattern || '')}</strong><br><span class="muted small">${escapeHtml(f.detail || '')}</span></div>
       `;
       astList.appendChild(li);
     });
@@ -343,7 +354,8 @@ function renderReport(r) {
   // Graph features
   const gf = $('#graphFeatures');
   gf.innerHTML = '';
-  for (const [k, v] of Object.entries(r.graph)) {
+  const graphObj = (r.graph && typeof r.graph === 'object') ? r.graph : {};
+  for (const [k, v] of Object.entries(graphObj)) {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${escapeHtml(k)}</td><td>${escapeHtml(String(v))}</td>`;
     gf.appendChild(tr);
@@ -352,20 +364,24 @@ function renderReport(r) {
   // Transactions
   const tx = $('#txTable');
   tx.innerHTML = '';
-  r.transactions.forEach((t) => {
+  const txArr = Array.isArray(r.transactions) ? r.transactions : [];
+  txArr.forEach((t) => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${shorten(t.hash, 10, 6)}</td>
       <td>${shorten(t.from)}</td>
       <td>${shorten(t.to)}</td>
-      <td class="right">${t.value}</td>
-      <td>${escapeHtml(t.time)}</td>
+      <td class="right">${escapeHtml(String(t.value ?? ''))}</td>
+      <td>${escapeHtml(t.time || '')}</td>
     `;
     tx.appendChild(tr);
   });
 
   // Verdict
-  $('#verdictText').textContent = r.verdict;
+  $('#verdictText').innerHTML = renderMarkdown(r.verdict || '(no verdict returned)');
+
+  // Reset chat for the new report
+  resetChat();
 }
 
 function shorten(s, head = 8, tail = 6) {
@@ -375,6 +391,40 @@ function shorten(s, head = 8, tail = 6) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ---------- Tiny safe markdown renderer ----------
+// Handles: **bold**, *italic*, `code`, ```fenced```, [text](url),
+//          - / * bullet lists, numbered lists, paragraphs, line breaks.
+// Input is HTML-escaped FIRST so user/model content can't inject tags.
+function renderMarkdown(src) {
+  if (src == null) return '';
+  let s = escapeHtml(String(src));
+
+  // Fenced code blocks (```...```)
+  s = s.replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code.trim()}</code></pre>`);
+  // Inline code
+  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  // Bold then italic (bold first so ** isn't eaten by *)
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  // Links [text](http(s)://...)
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  // Lists + paragraphs (process per blank-line block)
+  const blocks = s.split(/\n{2,}/).map((block) => {
+    const lines = block.split('\n');
+    if (lines.every((l) => /^\s*[-*]\s+/.test(l))) {
+      return '<ul>' + lines.map((l) => `<li>${l.replace(/^\s*[-*]\s+/, '')}</li>`).join('') + '</ul>';
+    }
+    if (lines.every((l) => /^\s*\d+\.\s+/.test(l))) {
+      return '<ol>' + lines.map((l) => `<li>${l.replace(/^\s*\d+\.\s+/, '')}</li>`).join('') + '</ol>';
+    }
+    if (/^<pre>/.test(block)) return block;
+    return '<p>' + block.replace(/\n/g, '<br>') + '</p>';
+  });
+  return blocks.join('');
 }
 
 // ---------- Seeded PRNG so the same address gives the same report ----------
@@ -394,3 +444,91 @@ function mulberry32(a) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+// =====================================================================
+// Follow-up chat - POST /api/chat with the last report as context.
+// =====================================================================
+const CHAT_API_URL = '/api/chat';
+const chatForm    = document.getElementById('chatForm');
+const chatInput   = document.getElementById('chatInput');
+const chatSendBtn = document.getElementById('chatSendBtn');
+const chatLog     = document.getElementById('chatLog');
+const chatHistory = []; // [{role:'user'|'assistant', content:'...'}]
+const initialChatHTML = chatLog ? chatLog.innerHTML : '';
+
+function resetChat() {
+  if (!chatLog) return;
+  chatLog.innerHTML = initialChatHTML;
+  chatHistory.length = 0;
+  if (chatInput) chatInput.value = '';
+}
+
+function appendChatMsg(role, text, extraClass = '') {
+  const div = document.createElement('div');
+  div.className = ('chat-msg ' + role + ' ' + extraClass).trim();
+  // Assistant messages may contain markdown from the LLM; user/error stay plain text.
+  if (role === 'assistant' && !extraClass.includes('thinking')) {
+    div.innerHTML = renderMarkdown(text);
+  } else {
+    div.textContent = text;
+  }
+  chatLog.appendChild(div);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return div;
+}
+
+async function sendChatMessage(question) {
+  if (!lastReport) {
+    appendChatMsg('assistant', 'Run an audit first, then I can answer questions about it.', 'error');
+    return;
+  }
+  if (!question || !question.trim()) return;
+
+  appendChatMsg('user', question);
+  chatHistory.push({ role: 'user', content: question });
+
+  chatInput.value = '';
+  chatInput.disabled = true;
+  chatSendBtn.disabled = true;
+  const thinkingEl = appendChatMsg('assistant', 'Thinking...', 'thinking');
+
+  try {
+    const resp = await fetch(CHAT_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        report:  lastReport,
+        history: chatHistory.slice(0, -1), // exclude the just-pushed user turn
+      }),
+    });
+    let body = null;
+    try { body = await resp.json(); } catch (_) {}
+    if (!resp.ok) {
+      const detail = (body && body.detail) ? body.detail : resp.statusText;
+      throw new Error(detail);
+    }
+    const answer = (body && body.answer) ? body.answer : '(empty response)';
+    thinkingEl.remove();
+    appendChatMsg('assistant', answer);
+    chatHistory.push({ role: 'assistant', content: answer });
+  } catch (err) {
+    thinkingEl.remove();
+    appendChatMsg('assistant', 'Error: ' + err.message, 'error');
+  } finally {
+    chatInput.disabled = false;
+    chatSendBtn.disabled = false;
+    chatInput.focus();
+  }
+}
+
+if (chatForm) {
+  chatForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendChatMessage(chatInput.value.trim());
+  });
+}
+
+document.querySelectorAll('.chip.suggest').forEach((btn) => {
+  btn.addEventListener('click', () => sendChatMessage(btn.textContent.trim()));
+});

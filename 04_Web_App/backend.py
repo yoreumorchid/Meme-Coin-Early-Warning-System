@@ -19,6 +19,8 @@ Then open http://localhost:8000/
 from __future__ import annotations
 
 import sys
+import re
+import json
 import time
 import logging
 from pathlib import Path
@@ -30,16 +32,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
-# Make `tools` importable: workspace root + 03_Agents_and_Tools
+# Make agent_runner + tools importable from 03_Agents_and_Tools
 # ---------------------------------------------------------------------------
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "03_Agents_and_Tools"))
 
-from tools.fetch_tool import fetch_transactions          # noqa: E402
-from tools.graph_tool import extract_graph_features      # noqa: E402
-from tools.ast_tool import analyze_contract_code         # noqa: E402
-from tools.predict_tool import predict_fraud_probability # noqa: E402
+from agent_runner import run_agent, chat_about_report     # noqa: E402
 
 # ---------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
@@ -69,6 +68,17 @@ CHAIN_IDS = {"eth": "1"}
 class AuditRequest(BaseModel):
     address: str = Field(..., pattern=r"^0x[0-9a-fA-F]{40}$")
     chain: str = Field(default="eth")
+
+
+class ChatMessage(BaseModel):
+    role: str = Field(..., pattern=r"^(user|assistant)$")
+    content: str
+
+
+class ChatRequest(BaseModel):
+    question: str
+    report: dict
+    history: list[ChatMessage] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -147,14 +157,21 @@ def _txs_to_frontend(raw_txs: list[dict], limit: int = 6) -> list[dict]:
 
 def _graph_to_frontend(g: dict) -> dict:
     """Pretty-label the graph features for the UI table."""
+    if not g:
+        return {"Status": "Graph features unavailable (agent did not call extract_graph_features)"}
     if "error" in g:
         return {"Status": g["error"]}
+    def _r(v):
+        try:
+            return round(float(v), 4)
+        except (TypeError, ValueError):
+            return v
     return {
-        "Unique wallets":       g["unique_wallets"],
-        "Transactions":         g["tx_count"],
-        "Max degree centrality": round(g["max_centrality"], 4),
-        "Avg clustering coef.":  round(g["avg_clustering"], 4),
-        "Value volatility":      round(g["value_volatility"], 4),
+        "Unique wallets":        g.get("unique_wallets", "—"),
+        "Transactions":          g.get("tx_count", "—"),
+        "Max degree centrality": _r(g.get("max_centrality", 0)),
+        "Avg clustering coef.":  _r(g.get("avg_clustering", 0)),
+        "Value volatility":      _r(g.get("value_volatility", 0)),
     }
 
 
@@ -190,6 +207,79 @@ def _verdict(score: int, ml_prob: float, ast: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Agent-output parsing helpers
+# ---------------------------------------------------------------------------
+def _extract_json(text: str) -> dict:
+    """Pull the first JSON object out of the LLM's final message.
+
+    The agent is instructed to emit a JSON report but may wrap it in a
+    ```json ... ``` fence or include surrounding prose. We try (a) the
+    fenced block, then (b) the first balanced {...} we can find.
+    """
+    if not text:
+        return {}
+
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
+    if fence:
+        try:
+            return json.loads(fence.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # naive but works for the agent's report shape
+    start = text.find("{")
+    if start == -1:
+        return {}
+    depth = 0
+    for i, ch in enumerate(text[start:], start=start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return {}
+    return {}
+
+
+def _coerce_pct(val) -> int | None:
+    """Accept '84%', '84', 84, 84.0 -> 84 (clamped 0-100). Else None."""
+    if val is None:
+        return None
+    try:
+        if isinstance(val, str):
+            val = val.strip().rstrip("%")
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    return max(0, min(100, round(f)))
+
+
+def _verdict_from_agent(
+    risk_level: str,
+    explanation: str,
+    score: int,
+    ml_prob: float,
+    ast: list[dict],
+) -> str:
+    """Prefer the agent's natural-language explanation; fall back to template."""
+    if explanation:
+        prefix = risk_level if risk_level else _level_from_score(score)
+        return f"{prefix} — {explanation}"
+    return _verdict(score, ml_prob, ast)
+
+
+def _level_from_score(score: int) -> str:
+    if score >= 70:
+        return "HIGH RISK"
+    if score >= 50:
+        return "MEDIUM RISK"
+    return "LOW RISK"
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 @app.get("/api/health")
@@ -199,58 +289,60 @@ def health():
 
 @app.post("/api/audit")
 def audit(req: AuditRequest):
-    log.info("Audit request: %s on %s", req.address, req.chain)
+    log.info("Audit request (agent): %s on %s", req.address, req.chain)
     chain_id = CHAIN_IDS.get(req.chain.lower(), "1")
 
-    # 1) Fetch on-chain transactions
-    fetched = fetch_transactions(req.address, chain_id=chain_id)
-    if not fetched.get("success"):
+    # ── Run the DeepSeek function-calling agent ──────────────────────────
+    try:
+        agent_out = run_agent(req.address, chain_id=chain_id, verbose=False)
+    except EnvironmentError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        log.exception("Agent crashed")
+        raise HTTPException(status_code=502, detail=f"Agent failure: {e}")
+
+    tool_results = agent_out.get("tool_results", {}) or {}
+    final_text   = agent_out.get("final_response", "") or ""
+
+    # ── Surface upstream tool errors as clear HTTP responses ─────────────
+    fetched = tool_results.get("fetch_transactions", {})
+    if fetched and not fetched.get("success", True):
         err = (fetched.get("error") or "").lower()
-        # Etherscan returns success=False with "No transactions found" when the
-        # address has no ERC-20 transfers (either not a token contract, or
-        # truly inactive). Surface this as a clear 404-style message.
         if "no transactions" in err or "no records" in err:
             raise HTTPException(
                 status_code=404,
                 detail=(
                     "No ERC-20 transactions found for this address on Ethereum "
                     "mainnet. The address may not be an ERC-20 token contract, "
-                    "or it may not exist on this chain. Please double-check the "
-                    "address on etherscan.io."
+                    "or it may not exist on this chain."
                 ),
             )
         raise HTTPException(
             status_code=502,
             detail=f"Etherscan fetch failed: {fetched.get('error', 'unknown')}",
         )
-    raw_txs = fetched["transactions"]
-    if not raw_txs:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Address returned zero ERC-20 transfer records. It is likely not "
-                "an ERC-20 token contract on Ethereum mainnet."
-            ),
-        )
 
-    # 2) Graph features
-    graph_feat = extract_graph_features(raw_txs)
-    if "error" in graph_feat:
-        raise HTTPException(status_code=422, detail=graph_feat["error"])
+    raw_txs    = fetched.get("transactions", []) if fetched else []
+    graph_feat = tool_results.get("extract_graph_features", {}) or {}
+    pred       = tool_results.get("predict_fraud_probability", {}) or {}
+    ast_result = tool_results.get("analyze_contract_code", {}) or {}
 
-    # 3) AST static analysis
-    ast_result = analyze_contract_code(req.address)
+    # ── Parse the agent's JSON report (it may be wrapped in ```json ... ```) ──
+    parsed = _extract_json(final_text)
 
-    # 4) ML inference
-    pred = predict_fraud_probability(graph_feat)
-    if pred.get("status") != "success":
-        log.warning("Predict tool error: %s", pred.get("error"))
-    ml_prob = float(pred.get("ml_probability", 50.0)) / 100.0  # tool returns 0-100
+    # Risk score: prefer agent's final_risk_score, else recompute from components
+    ml_prob   = float(pred.get("ml_probability", 50.0)) / 100.0   # 0-1
+    ast_score = float(ast_result.get("ast_risk_score", 0.0))      # 0-1
 
-    # 5) Weighted synthesis
-    ast_score = float(ast_result.get("ast_risk_score", 0.0))   # 0-1
-    risk_score = _weighted_score(ml_prob, ast_score)
+    risk_score = _coerce_pct(parsed.get("final_risk_score"))
+    if risk_score is None:
+        risk_score = max(0, min(100, round(ml_prob * 75 + ast_score * 25)))
+
     ast_frontend = _ast_to_frontend(ast_result)
+    risk_level   = (parsed.get("risk_level") or "").upper()
+    explanation  = parsed.get("explanation") or ""
+
+    verdict = _verdict_from_agent(risk_level, explanation, risk_score, ml_prob, ast_frontend)
 
     response = {
         "address":   req.address,
@@ -261,11 +353,34 @@ def audit(req: AuditRequest):
         "ast":           ast_frontend,
         "graph":         _graph_to_frontend(graph_feat),
         "transactions":  _txs_to_frontend(raw_txs),
-        "verdict":       _verdict(risk_score, ml_prob, ast_frontend),
+        "verdict":       verdict,
+        "agent": {
+            "risk_level":  risk_level or None,
+            "explanation": explanation or None,
+            "raw":         final_text,
+        },
     }
-    log.info("Audit complete: score=%d  ml=%.3f  ast=%.2f  findings=%d",
-             risk_score, ml_prob, ast_score, len(ast_frontend))
+    log.info("Audit complete (agent): score=%d  ml=%.3f  ast=%.2f  level=%s",
+             risk_score, ml_prob, ast_score, risk_level or "n/a")
     return response
+
+
+@app.post("/api/chat")
+def chat(req: ChatRequest):
+    """Follow-up Q&A about a given audit report (uses DeepSeek)."""
+    try:
+        history = [m.model_dump() for m in req.history]
+        answer = chat_about_report(
+            question=req.question,
+            report=req.report,
+            history=history,
+        )
+    except EnvironmentError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        log.exception("Chat failure")
+        raise HTTPException(status_code=502, detail=f"Chat failure: {e}")
+    return {"answer": answer}
 
 
 # ---------------------------------------------------------------------------
